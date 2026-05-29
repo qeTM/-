@@ -2,13 +2,28 @@ name: Monitor Element Plus Issues to Feishu
 
 on:
   schedule:
-   - cron: '*/5 * * * *'  # 每隔 5 分钟执行一次
-  workflow_dispatch:       # 允许手动点击按钮立即测试运行
+    - cron: '*/5 * * * *'  # 每隔 5 分钟执行一次
+  workflow_dispatch:       # 允许手动立即运行
 
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     steps:
+      - name: Send Startup Notification (First Run Only)
+        if: github.run_attempt == 1
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          # 发送一条启动通知消息
+          curl -X POST -H "Content-Type: application/json" \
+            -d '{
+              "msg_type": "text",
+              "content": {
+                "text": "🚀 Element Plus Issue 监控服务已启动！\n\n📅 监控开始时间：2026-05-29 星期五\n📍 监控位置：四川省 成都市\n⏱️ 请关注后续的 Issue 动态。"
+              }
+            }' \
+            $FEISHU_WEBHOOK
+
       - name: Check new issues and send to Feishu
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
