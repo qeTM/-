@@ -1,0 +1,42 @@
+name: Monitor Element Plus Issues to Feishu
+
+on:
+  schedule:
+   - cron: '*/5 * * * *'  # 每隔 5 分钟执行一次
+  workflow_dispatch:       # 允许手动点击按钮立即测试运行
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check new issues and send to Feishu
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # 获取过去 35 分钟内 Element Plus 仓库的新增 Issue (带上 Token 避免限流)
+          SINCE_TIME=$(date -d '35 minutes ago' --iso-8601=seconds)
+          RESPONSE=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/element-plus/element-plus/issues?state=all&since=$SINCE_TIME")
+          
+          # 提取 Issue 数量 (过滤掉 PR，只保留普通 Issue)
+          COUNT=$(echo "$RESPONSE" | jq '[.[] | select(.pull_request == null)] | length')
+          
+          if [ "$COUNT" -gt 0 ]; then
+            echo "🚨 发现 $COUNT 个新的 Issue 动态！准备发送到飞书..."
+            
+            # 提取前 3 个新 Issue 的标题和链接
+            MESSAGES=$(echo "$RESPONSE" | jq -r '[.[] | select(.pull_request == null)] | .[0:3] | .[] | "- [\(.title)](\(.html_url))"' | tr '\n' '\\n')
+            
+            # 调用飞书 Webhook 发送消息
+            curl -X POST -H "Content-Type: application/json" \
+              -d "{
+                \"msg_type\": \"text\",
+                \"content\": {
+                  \"text\": \"🔔 Element Plus 仓库有新动态！\\n\\n最近新增 $COUNT 个 Issue：\\n$MESSAGES\"
+                }
+              }" \
+              $FEISHU_WEBHOOK
+          else
+            echo "✅ 过去 35 分钟内暂无新 Issue 动态。"
+          fi
