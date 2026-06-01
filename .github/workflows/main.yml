@@ -9,49 +9,82 @@ jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Send Startup Notification (First Run Only)
-        if: github.run_attempt == 1
+      - name: Checkout (用于缓存)
+        uses: actions/checkout@v4
+
+      - name: Load Last Checkpoint
+        id: load
+        run: |
+          # 尝试读取上次记录的最新 Issue ID，如果没有则设为 0
+          if [ -f .github/last_issue_id.txt ]; then
+            echo "LAST_ID=$(cat .github/last_issue_id.txt)" >> $GITHUB_ENV
+            echo "Loaded last ID: $(cat .github/last_issue_id.txt)"
+          else
+            echo "LAST_ID=0" >> $GITHUB_ENV
+            echo "No checkpoint found, starting from scratch."
+          fi
+
+      - name: Check for New Issues
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # 1. 获取仓库最新的 Issue 列表（按创建时间排序，最新的在最前）
+          # 注意：这里只取第一页（默认30条），因为通常5分钟内不会超过30个新Issue
+          RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/element-plus/element-plus/issues?state=all&sort=created&direction=desc&per_page=30")
+          
+          # 2. 提取第一个（最新）Issue 的 ID 和标题
+          # jq '.[0].id' 提取 ID, '.[0].title' 提取标题, '.[0].html_url' 提取链接
+          LATEST_ID=$(echo "$RESPONSE" | jq -r '.[0].id')
+          LATEST_TITLE=$(echo "$RESPONSE" | jq -r '.[0].title')
+          LATEST_URL=$(echo "$RESPONSE" | jq -r '.[0].html_url')
+          
+          # 3. 检查是否提取成功
+          if [ "$LATEST_ID" = "null" ] || [ -z "$LATEST_ID" ]; then
+            echo "No issues found in the response."
+            exit 0
+          fi
+
+          # 4. 对比 ID 判断是否为新 Issue
+          # 如果最新的 ID 大于记录的 ID，说明有新内容
+          if [ "$LATEST_ID" -gt "${{ env.LAST_ID }}" ]; then
+            echo "New issue detected! ID: $LATEST_ID (Previous: ${{ env.LAST_ID }})"
+            
+            # 设置输出变量供后续步骤使用
+            echo "NEW_ISSUE_ID=$LATEST_ID" >> $GITHUB_ENV
+            echo "NEW_ISSUE_TITLE=$LATEST_TITLE" >> $GITHUB_ENV
+            echo "NEW_ISSUE_URL=$LATEST_URL" >> $GITHUB_ENV
+            
+            # 更新记录文件
+            mkdir -p .github
+            echo "$LATEST_ID" > .github/last_issue_id.txt
+          else
+            echo "No new issues. Current latest ID: $LATEST_ID, Last recorded: ${{ env.LAST_ID }}"
+            exit 0
+          fi
+
+      - name: Save Checkpoint
+        if: env.NEW_ISSUE_ID != ''
+        run: |
+          # 仅在有新 Issue 时才提交更新记录文件
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .github/last_issue_id.txt
+          git commit -m "Update last_issue_id to ${{ env.NEW_ISSUE_ID }}" || echo "No changes to commit"
+          git push
+
+      - name: Send to Feishu
+        if: env.NEW_ISSUE_ID != ''
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: |
-          # 发送一条启动通知消息
+          # 发送飞书消息
           curl -X POST -H "Content-Type: application/json" \
             -d '{
               "msg_type": "text",
               "content": {
-                "text": "🚀 Element Plus Issue 监控服务已启动！\n\n📅 监控开始时间：2026-05-29 星期五\n📍 监控位置：四川省 成都市\n⏱️ 请关注后续的 Issue 动态。"
+                "text": "🚨 **发现 Element Plus 新 Issue！**\n\n📌 **标题**: ${{ env.NEW_ISSUE_TITLE }}\n🔗 **链接**: ${{ env.NEW_ISSUE_URL }}\n🆔 **ID**: ${{ env.NEW_ISSUE_ID }}\n\n---\n🤖 自动监控服务 | 成都时间: $(date "+%Y-%m-%d %H:%M:%S")"
               }
             }' \
             $FEISHU_WEBHOOK
-
-      - name: Check new issues and send to Feishu
-        env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          # 获取过去 35 分钟内 Element Plus 仓库的新增 Issue (带上 Token 避免限流)
-          SINCE_TIME=$(date -d '35 minutes ago' --iso-8601=seconds)
-          RESPONSE=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/element-plus/element-plus/issues?state=all&since=$SINCE_TIME")
-          
-          # 提取 Issue 数量 (过滤掉 PR，只保留普通 Issue)
-          COUNT=$(echo "$RESPONSE" | jq '[.[] | select(.pull_request == null)] | length')
-          
-          if [ "$COUNT" -gt 0 ]; then
-            echo "🚨 发现 $COUNT 个新的 Issue 动态！准备发送到飞书..."
-            
-            # 提取前 3 个新 Issue 的标题和链接
-            MESSAGES=$(echo "$RESPONSE" | jq -r '[.[] | select(.pull_request == null)] | .[0:3] | .[] | "- [\(.title)](\(.html_url))"' | tr '\n' '\\n')
-            
-            # 调用飞书 Webhook 发送消息
-            curl -X POST -H "Content-Type: application/json" \
-              -d "{
-                \"msg_type\": \"text\",
-                \"content\": {
-                  \"text\": \"🔔 Element Plus 仓库有新动态！\\n\\n最近新增 $COUNT 个 Issue：\\n$MESSAGES\"
-                }
-              }" \
-              $FEISHU_WEBHOOK
-          else
-            echo "✅ 过去 35 分钟内暂无新 Issue 动态。"
-          fi
