@@ -9,7 +9,7 @@ jobs:
   check-and-notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (用于缓存)
+      - name: Checkout 
         uses: actions/checkout@v5
 
       - name: Load Last Checkpoint
@@ -29,29 +29,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          # 1. 获取仓库最新的 Issue 列表（按创建时间排序，最新的在最前）
-          # 注意：这里只取第一页（默认30条），因为通常5分钟内不会超过30个新Issue
+          # 1. 安装 jq (必要的 JSON 解析工具)
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+          # 2. 获取仓库最新的 Issues (注意: 这里加了 filter=is:issue，只看纯 Issue)
+          # 按创建时间排序，最新的在最前
           RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/element-plus/element-plus/issues?state=all&sort=created&direction=desc&per_page=30")
+            "https://api.github.com/repos/element-plus/element-plus/issues?state=all&sort=created&direction=desc&per_page=30&filter=is:issue")
           
-          # 2. 提取第一个（最新）Issue 的 ID 和标题
-          # jq '.[0].id' 提取 ID, '.[0].title' 提取标题, '.[0].html_url' 提取链接
+          # 3. 提取第一个 Issue 的信息
           LATEST_ID=$(echo "$RESPONSE" | jq -r '.[0].id')
           LATEST_TITLE=$(echo "$RESPONSE" | jq -r '.[0].title')
           LATEST_URL=$(echo "$RESPONSE" | jq -r '.[0].html_url')
           
-          # 3. 检查是否提取成功
+          # 4. 安全检查
           if [ "$LATEST_ID" = "null" ] || [ -z "$LATEST_ID" ]; then
             echo "No issues found in the response."
             exit 0
           fi
 
-          # 4. 对比 ID 判断是否为新 Issue
-          # 如果最新的 ID 大于记录的 ID，说明有新内容
+          # 5. 核心逻辑修复：只处理 "纯 Issue" 且 ID 大于记录的情况
           if [ "$LATEST_ID" -gt "${{ env.LAST_ID }}" ]; then
-            echo "New issue detected! ID: $LATEST_ID (Previous: ${{ env.LAST_ID }})"
+            echo "New issue detected! ID: $LATEST_ID"
             
-            # 设置输出变量供后续步骤使用
+            # 设置环境变量
             echo "NEW_ISSUE_ID=$LATEST_ID" >> $GITHUB_ENV
             echo "NEW_ISSUE_TITLE=$LATEST_TITLE" >> $GITHUB_ENV
             echo "NEW_ISSUE_URL=$LATEST_URL" >> $GITHUB_ENV
@@ -67,7 +69,6 @@ jobs:
       - name: Save Checkpoint
         if: env.NEW_ISSUE_ID != ''
         run: |
-          # 仅在有新 Issue 时才提交更新记录文件
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add .github/last_issue_id.txt
