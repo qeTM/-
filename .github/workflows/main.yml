@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (用于缓存)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Load Last Checkpoint
         id: load
